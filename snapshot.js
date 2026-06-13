@@ -10,8 +10,10 @@
     let activeSnapshotTab = "auto";
 
     const STORAGE_PREFIX = "video_html_";
+    const UI_POSITION_KEY = "snapshot_ui_position";
     const MAX_AUTO_SNAPSHOTS = 10;
     const VISIBLE_LIST_ROWS = 5;
+    const DRAG_THRESHOLD = 5;
 
     // ------------------------
     // HELPERS
@@ -165,6 +167,177 @@
     let panel;
     let toggleBtn;
     let visible = true;
+    let dragState = null;
+    let suppressToggleClick = false;
+
+    function getSavedButtonPosition() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(UI_POSITION_KEY) || "null");
+
+            if (
+                saved
+                && typeof saved.left === "number"
+                && typeof saved.top === "number"
+            ) {
+                return saved;
+            }
+        } catch (err) {
+            console.warn("Invalid saved snapshot UI position.", err);
+        }
+
+        return null;
+    }
+
+    function saveButtonPosition() {
+        if (!toggleBtn) return;
+
+        localStorage.setItem(UI_POSITION_KEY, JSON.stringify({
+            left: parseFloat(toggleBtn.style.left) || 0,
+            top: parseFloat(toggleBtn.style.top) || 0
+        }));
+    }
+
+    function setButtonPosition(left, top) {
+        if (!toggleBtn) return;
+
+        const maxLeft = Math.max(0, window.innerWidth - toggleBtn.offsetWidth);
+        const maxTop = Math.max(0, window.innerHeight - toggleBtn.offsetHeight);
+
+        toggleBtn.style.left = `${Math.max(0, Math.min(maxLeft, left))}px`;
+        toggleBtn.style.top = `${Math.max(0, Math.min(maxTop, top))}px`;
+        toggleBtn.style.right = "auto";
+        toggleBtn.style.bottom = "auto";
+    }
+
+    function positionButtonDefault() {
+        if (!toggleBtn) return;
+
+        setButtonPosition(
+            window.innerWidth - toggleBtn.offsetWidth - 10,
+            window.innerHeight - toggleBtn.offsetHeight - 10
+        );
+    }
+
+    function loadButtonPosition() {
+        const saved = getSavedButtonPosition();
+
+        if (saved) {
+            setButtonPosition(saved.left, saved.top);
+        } else {
+            positionButtonDefault();
+        }
+    }
+
+    function updatePanelPosition() {
+        if (!panel || !toggleBtn) return;
+
+        const gap = 8;
+        const panelWidth = panel.offsetWidth || 380;
+        const btnRect = toggleBtn.getBoundingClientRect();
+        const wasHidden = panel.style.display === "none";
+
+        panel.style.display = "block";
+        panel.style.visibility = "hidden";
+
+        const panelHeight = panel.offsetHeight;
+        const spaceAbove = btnRect.top;
+        const spaceBelow = window.innerHeight - btnRect.bottom;
+        const buttonInTopHalf = btnRect.top + (btnRect.height / 2) < window.innerHeight / 2;
+        const preferBelow = buttonInTopHalf || spaceAbove < panelHeight + gap;
+
+        let panelTop;
+
+        if (preferBelow) {
+            panelTop = btnRect.bottom + gap;
+        } else {
+            panelTop = btnRect.top - panelHeight - gap;
+        }
+
+        if (panelTop + panelHeight + gap > window.innerHeight) {
+            panelTop = Math.max(gap, window.innerHeight - panelHeight - gap);
+        }
+
+        if (panelTop < gap) {
+            panelTop = btnRect.bottom + gap;
+
+            if (panelTop + panelHeight + gap > window.innerHeight) {
+                panelTop = Math.max(gap, window.innerHeight - panelHeight - gap);
+            }
+        }
+
+        let panelLeft = btnRect.left;
+
+        if (panelLeft + panelWidth + gap > window.innerWidth) {
+            panelLeft = window.innerWidth - panelWidth - gap;
+        }
+
+        panelLeft = Math.max(gap, panelLeft);
+
+        panel.style.left = `${panelLeft}px`;
+        panel.style.top = `${panelTop}px`;
+        panel.style.right = "auto";
+        panel.style.bottom = "auto";
+        panel.style.visibility = "";
+        panel.style.display = wasHidden && !visible ? "none" : "block";
+    }
+
+    function setupDraggableUi() {
+        toggleBtn.style.cursor = "grab";
+
+        toggleBtn.addEventListener("mousedown", (event) => {
+            if (event.button !== 0) return;
+
+            dragState = {
+                startX: event.clientX,
+                startY: event.clientY,
+                startLeft: parseFloat(toggleBtn.style.left) || 0,
+                startTop: parseFloat(toggleBtn.style.top) || 0,
+                moved: false
+            };
+
+            event.preventDefault();
+        });
+
+        document.addEventListener("mousemove", (event) => {
+            if (!dragState) return;
+
+            const dx = event.clientX - dragState.startX;
+            const dy = event.clientY - dragState.startY;
+
+            if (!dragState.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) {
+                return;
+            }
+
+            dragState.moved = true;
+            toggleBtn.style.cursor = "grabbing";
+            setButtonPosition(dragState.startLeft + dx, dragState.startTop + dy);
+            updatePanelPosition();
+        });
+
+        document.addEventListener("mouseup", () => {
+            if (!dragState) return;
+
+            if (dragState.moved) {
+                saveButtonPosition();
+                suppressToggleClick = true;
+            }
+
+            dragState = null;
+            toggleBtn.style.cursor = "grab";
+        });
+
+        window.addEventListener("resize", () => {
+            const saved = getSavedButtonPosition();
+
+            if (saved) {
+                setButtonPosition(saved.left, saved.top);
+            } else {
+                positionButtonDefault();
+            }
+
+            updatePanelPosition();
+        });
+    }
 
     function styleButton(btn, bg = "#333") {
     Object.assign(btn.style, {
@@ -184,13 +357,12 @@
 
         Object.assign(toggleBtn.style, {
             position: "fixed",
-            bottom: "10px",
-            right: "10px",
             zIndex: 999999,
             padding: "6px 10px",
             background: "rgb(204, 216, 216)",
             border: "none",
-            cursor: "pointer"
+            cursor: "grab",
+            userSelect: "none"
         });
 
         document.body.appendChild(toggleBtn);
@@ -199,8 +371,6 @@
 
         Object.assign(panel.style, {
             position: "fixed",
-            bottom: "50px",
-            right: "10px",
             width: "380px",
             background: "#111",
             color: "rgb(204, 216, 216)",
@@ -214,9 +384,22 @@
 
         document.body.appendChild(panel);
 
+        loadButtonPosition();
+        setupDraggableUi();
+        updatePanelPosition();
+
         toggleBtn.onclick = () => {
+            if (suppressToggleClick) {
+                suppressToggleClick = false;
+                return;
+            }
+
             visible = !visible;
             panel.style.display = visible ? "block" : "none";
+
+            if (visible) {
+                updatePanelPosition();
+            }
         };
     }
 
@@ -228,11 +411,12 @@
         if (!currentVideoId) {
             panel.innerHTML = `
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                    <strong>Snapshots</strong>
+                    <strong>Snapshots v2.4</strong>
                     <span style="color:#8f8;">Total: ${totalCount}</span>
                 </div>
                 <div>No video selected.</div>
             `;
+            updatePanelPosition();
             return;
         }
 
@@ -253,7 +437,7 @@
 
         panel.innerHTML = `
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                <div><strong>Video:</strong> ${currentVideoId}</div>
+                <div><strong>Snapshots v2.4</strong> — ${currentVideoId}</div>
                 <span style="color:#8f8;">Total: ${totalCount}</span>
             </div>
 
@@ -428,6 +612,10 @@
 
                 data[idx].name = newName;
 
+                if (isAutoSnapshot(data[idx])) {
+                    data[idx].manual = true;
+                }
+
                 localStorage.setItem(
                     key,
                     JSON.stringify(trimSnapshots(data))
@@ -465,6 +653,10 @@
                 renderUI();
             };
         });
+
+        if (visible) {
+            updatePanelPosition();
+        }
     }
 
     function escapeHtml(str) {
@@ -600,6 +792,24 @@
             padding: 0 1px;
         }
 
+        .snap-diff-field {
+            display: inline-block;
+            box-sizing: border-box;
+            min-height: 1.25em;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        input.snap-diff-field,
+        textarea.snap-diff-field,
+        .snap-diff-field[data-snap-diff-field="input"],
+        .snap-diff-field[data-snap-diff-field="textarea"] {
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 4px 8px;
+            background: #fff;
+        }
+
         .snap-diff-state-add {
             outline: 2px solid #3fb950 !important;
             outline-offset: 2px;
@@ -712,6 +922,125 @@
         return frag;
     }
 
+    function getElementByPath(root, path) {
+        let node = root;
+
+        for (const idx of path) {
+            if (!node || idx >= node.childNodes.length) {
+                return null;
+            }
+
+            node = node.childNodes[idx];
+        }
+
+        return node && node.nodeType === Node.ELEMENT_NODE ? node : null;
+    }
+
+    function isTextFieldElement(el) {
+        if (!el || el.nodeType !== Node.ELEMENT_NODE) {
+            return false;
+        }
+
+        const tag = el.tagName;
+
+        if (tag === "TEXTAREA") {
+            return true;
+        }
+
+        if (tag === "INPUT") {
+            const type = (el.getAttribute("type") || "text").toLowerCase();
+
+            return type !== "hidden"
+                && type !== "checkbox"
+                && type !== "radio"
+                && type !== "button"
+                && type !== "submit"
+                && type !== "reset"
+                && type !== "file";
+        }
+
+        if (el.isContentEditable) {
+            return true;
+        }
+
+        return (el.hasAttribute("contenteditable")
+                && el.getAttribute("contenteditable") !== "false")
+            || el.getAttribute("role") === "textbox";
+    }
+
+    function isInsideTextField(node) {
+        let el = node.nodeType === Node.ELEMENT_NODE
+            ? node
+            : node.parentElement;
+
+        while (el) {
+            if (isTextFieldElement(el)) {
+                return true;
+            }
+
+            el = el.parentElement;
+        }
+
+        return false;
+    }
+
+    function getFieldText(el) {
+        if (!el || el.nodeType !== Node.ELEMENT_NODE) {
+            return "";
+        }
+
+        const tag = el.tagName;
+
+        if (tag === "TEXTAREA") {
+            return el.value || el.textContent || el.getAttribute("value") || "";
+        }
+
+        if (tag === "INPUT") {
+            return el.value || el.getAttribute("value") || "";
+        }
+
+        return el.textContent || "";
+    }
+
+    function applyFieldDiff(el, oldText, newText) {
+        const tag = el.tagName;
+
+        if (tag === "INPUT" || tag === "TEXTAREA") {
+            const display = document.createElement("div");
+            display.className = `${el.className} snap-diff-field`.trim();
+            display.setAttribute("data-snap-diff-field", tag.toLowerCase());
+
+            if (el.getAttribute("style")) {
+                display.setAttribute("style", el.getAttribute("style"));
+            }
+
+            display.appendChild(createDiffFragment(oldText, newText));
+            el.parentNode.replaceChild(display, el);
+            return;
+        }
+
+        el.textContent = "";
+        el.appendChild(createDiffFragment(oldText, newText));
+    }
+
+    function annotateTextFieldDiffs(oldRoot, newRoot) {
+        for (const { el, path } of collectElements(newRoot)) {
+            if (!isTextFieldElement(el)) {
+                continue;
+            }
+
+            const oldEl = getElementByPath(oldRoot, path);
+            const oldText = getFieldText(oldEl);
+            const newText = getFieldText(el);
+
+            if (oldText === newText) {
+                continue;
+            }
+
+            applyFieldDiff(el, oldText, newText);
+        }
+    }
+
     function getNodeByPath(root, path) {
         let node = root;
 
@@ -730,12 +1059,16 @@
         const results = [];
 
         function walk(node, path) {
+            if (node.nodeType === Node.ELEMENT_NODE && isTextFieldElement(node)) {
+                return;
+            }
+
             for (let i = 0; i < node.childNodes.length; i++) {
                 const child = node.childNodes[i];
                 const childPath = path.concat(i);
 
                 if (child.nodeType === Node.TEXT_NODE) {
-                    if (child.textContent.trim()) {
+                    if (child.textContent.trim() && !isInsideTextField(child)) {
                         results.push({ node: child, path: childPath });
                     }
                 } else if (child.nodeType === Node.ELEMENT_NODE) {
@@ -805,11 +1138,32 @@
         const textNodes = collectTextNodes(newRoot);
 
         for (const { node, path } of textNodes) {
+            if (isInsideTextField(node)) {
+                continue;
+            }
+
             const oldNode = getNodeByPath(oldRoot, path);
-            const oldText = oldNode && oldNode.nodeType === Node.TEXT_NODE
+            let oldText = oldNode && oldNode.nodeType === Node.TEXT_NODE
                 ? oldNode.textContent
                 : "";
+
             const newText = node.textContent;
+
+            if (!oldText && newText) {
+                const newParent = node.parentElement;
+                const oldParent = newParent
+                    ? getNodeByPath(oldRoot, path.slice(0, -1))
+                    : null;
+
+                if (
+                    oldParent
+                    && oldParent.nodeType === Node.ELEMENT_NODE
+                    && newParent
+                    && oldParent.textContent === newParent.textContent
+                ) {
+                    continue;
+                }
+            }
 
             if (oldText === newText) {
                 continue;
@@ -856,6 +1210,7 @@
         }
 
         const clone = newRoot.cloneNode(true);
+        annotateTextFieldDiffs(oldRoot, clone);
         annotateTextDiffs(oldRoot, clone);
         annotateStateDiffs(oldRoot, clone);
         return clone.outerHTML;
@@ -886,7 +1241,7 @@
 
             comparing = !comparing;
             compareToggleBtn.classList.toggle("active", comparing);
-            compareToggleBtn.textContent = comparing ? "Compare: ON" : "Compare: OFF";
+            compareToggleBtn.textContent = comparing ? "Compare (Experimental): ON" : "Compare (Experimental): OFF";
             compareLegend.classList.toggle("visible", comparing);
             renderPanels();
         });
@@ -969,7 +1324,7 @@
                         Removed from snapshot
                     </span>
                 </span>
-                <button id="compareToggleBtn" type="button">Compare: OFF</button>
+                <button id="compareToggleBtn" type="button">Compare (Experimental): OFF</button>
             </div>
         </div>
 
