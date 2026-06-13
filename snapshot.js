@@ -1,3 +1,13 @@
+// ==UserScript==
+// @name         Snapshots v1.4
+// @namespace    http://tampermonkey.net/
+// @version      1.4
+// @description  Takes snapshots of a lovable site for fixing.
+// @author       RQ
+// @include      *://*annotator*.lovable.app/*
+// @grant        none
+// ==/UserScript==
+
 (function () {
     'use strict';
 
@@ -8,12 +18,18 @@
 
     let autoTrackingEnabled = true;
     let activeSnapshotTab = "auto";
+    let settingsVisible = false;
+    let storageFull = false;
 
     const STORAGE_PREFIX = "video_html_";
     const UI_POSITION_KEY = "snapshot_ui_position";
-    const MAX_AUTO_SNAPSHOTS = 10;
+    const SETTINGS_KEY = "snapshot_settings";
     const VISIBLE_LIST_ROWS = 5;
     const DRAG_THRESHOLD = 5;
+    const DEFAULT_SETTINGS = {
+        maxAutoSnapshots: 10,
+        debounceMs: 1000
+    };
 
     // ------------------------
     // HELPERS
@@ -63,6 +79,101 @@
         return !isManualSnapshot(entry);
     }
 
+    function clampNumber(value, min, max, fallback) {
+        const num = Number(value);
+
+        if (!Number.isFinite(num)) {
+            return fallback;
+        }
+
+        return Math.max(min, Math.min(max, num));
+    }
+
+    function getSettings() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
+
+            if (saved) {
+                return {
+                    maxAutoSnapshots: clampNumber(
+                        saved.maxAutoSnapshots,
+                        6,
+                        10,
+                        DEFAULT_SETTINGS.maxAutoSnapshots
+                    ),
+                    debounceMs: Math.max(
+                        100,
+                        Number(saved.debounceMs) || DEFAULT_SETTINGS.debounceMs
+                    )
+                };
+            }
+        } catch (err) {
+            console.warn("Invalid snapshot settings.", err);
+        }
+
+        return { ...DEFAULT_SETTINGS };
+    }
+
+    function saveSettings(updates) {
+        const settings = {
+            maxAutoSnapshots: clampNumber(
+                updates.maxAutoSnapshots,
+                6,
+                10,
+                DEFAULT_SETTINGS.maxAutoSnapshots
+            ),
+            debounceMs: Math.max(
+                100,
+                Number(updates.debounceMs) || DEFAULT_SETTINGS.debounceMs
+            )
+        };
+
+        try {
+            localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+        } catch (err) {
+            notifyStorageFull(err);
+            return null;
+        }
+
+        startObserver();
+        return settings;
+    }
+
+    function getMaxAutoSnapshots() {
+        return getSettings().maxAutoSnapshots;
+    }
+
+    function getDebounceMs() {
+        return getSettings().debounceMs;
+    }
+
+    function notifyStorageFull(err) {
+        if (err && err.name !== "QuotaExceededError" && err.code !== 22) {
+            throw err;
+        }
+
+        storageFull = true;
+
+        alert(
+            "Browser storage is full. Snapshots could not be saved.\n\n"
+            + "Try deleting snapshots from other videos, clearing older auto snapshots, "
+            + "or using \"Clear Other Videos\" to free space."
+        );
+    }
+
+    function persistSnapshotData(key, data) {
+        const trimmed = trimSnapshots(data);
+
+        try {
+            localStorage.setItem(key, JSON.stringify(trimmed));
+            storageFull = false;
+            return true;
+        } catch (err) {
+            notifyStorageFull(err);
+            return false;
+        }
+    }
+
     function getTotalSnapshotCount() {
         let total = 0;
 
@@ -78,7 +189,7 @@
         return total;
     }
 
-    function trimSnapshots(data, maxAuto = MAX_AUTO_SNAPSHOTS) {
+    function trimSnapshots(data, maxAuto = getMaxAutoSnapshots()) {
         const manual = data.filter(isManualSnapshot);
         let auto = data.filter(isAutoSnapshot);
 
@@ -109,8 +220,12 @@
             railHTML: snapshot.railHTML
         });
 
-        localStorage.setItem(key, JSON.stringify(trimSnapshots(data)));
+        if (!persistSnapshotData(key, data)) {
+            return false;
+        }
+
         renderUI();
+        return true;
     }
 
     // ------------------------
@@ -142,7 +257,7 @@
 
                     storeSnapshot(snap, { manual: false });
                 }
-            }, 1000);
+            }, getDebounceMs());
         });
 
         observer.observe(document.body, {
@@ -403,19 +518,129 @@
         };
     }
 
+    function bindSettingsHandlers() {
+        const saveSettingsBtn = document.getElementById("saveSettingsBtn");
+        const settingsBtn = document.getElementById("settingsBtn");
+
+        if (settingsBtn) {
+            styleButton(settingsBtn, settingsVisible ? "#2d6a4f" : "#444");
+            settingsBtn.onclick = () => {
+                settingsVisible = !settingsVisible;
+                renderUI();
+            };
+        }
+
+        if (!saveSettingsBtn) {
+            return;
+        }
+
+        styleButton(saveSettingsBtn, "#2d6a4f");
+
+        saveSettingsBtn.onclick = () => {
+            const maxAutoInput = document.getElementById("maxAutoInput");
+            const debounceInput = document.getElementById("debounceInput");
+            const debounceSeconds = Number(debounceInput.value);
+
+            const saved = saveSettings({
+                maxAutoSnapshots: maxAutoInput.value,
+                debounceMs: Math.round(debounceSeconds * 1000)
+            });
+
+            if (!saved) {
+                return;
+            }
+
+            settingsVisible = false;
+            renderUI();
+        };
+    }
+
+    function renderSettingsPanel(settings) {
+        if (!settingsVisible) {
+            return "";
+        }
+
+        return `
+            <div id="settingsPanel" style="
+                margin-bottom:8px;
+                padding:10px;
+                border:1px solid #333;
+                border-radius:4px;
+                background:#1a1a1a;
+            ">
+                <div style="margin-bottom:8px; font-weight:bold;">Settings</div>
+
+                <label style="display:block; margin-bottom:8px;">
+                    Auto snapshots to keep (6-10):
+                    <input
+                        id="maxAutoInput"
+                        type="number"
+                        min="6"
+                        max="10"
+                        step="1"
+                        value="${settings.maxAutoSnapshots}"
+                        style="width:60px; margin-left:6px;"
+                    />
+                </label>
+
+                <label style="display:block; margin-bottom:8px;">
+                    Debounce timer (seconds):
+                    <input
+                        id="debounceInput"
+                        type="number"
+                        min="0.1"
+                        max="30"
+                        step="0.1"
+                        value="${(settings.debounceMs / 1000).toFixed(1)}"
+                        style="width:60px; margin-left:6px;"
+                    />
+                </label>
+
+                <button id="saveSettingsBtn">Save Settings</button>
+            </div>
+        `;
+    }
+
+    function renderPanelHeader(titleExtra = "") {
+        const totalCount = getTotalSnapshotCount();
+
+        return `
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px;">
+                <div style="min-width:0; overflow:hidden;">
+                    <strong>Snapshots v2.5</strong>${titleExtra}
+                </div>
+                <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+                    <button id="settingsBtn" title="Settings">Settings</button>
+                    <span style="color:#8f8;">Total: ${totalCount}</span>
+                </div>
+            </div>
+        `;
+    }
+
     function renderUI() {
         if (!panel) return;
 
-        const totalCount = getTotalSnapshotCount();
+        const settings = getSettings();
 
         if (!currentVideoId) {
             panel.innerHTML = `
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                    <strong>Snapshots v2.4</strong>
-                    <span style="color:#8f8;">Total: ${totalCount}</span>
-                </div>
+                ${renderPanelHeader()}
+                ${storageFull ? `
+                    <div style="
+                        margin-bottom:8px;
+                        padding:8px;
+                        background:#5c1a1a;
+                        border:1px solid #a33;
+                        border-radius:4px;
+                        color:#fcc;
+                    ">
+                        Storage is full. Delete snapshots to continue saving.
+                    </div>
+                ` : ""}
+                ${renderSettingsPanel(settings)}
                 <div>No video selected.</div>
             `;
+            bindSettingsHandlers();
             updatePanelPosition();
             return;
         }
@@ -436,10 +661,20 @@
         const listMaxHeight = VISIBLE_LIST_ROWS * 44;
 
         panel.innerHTML = `
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                <div><strong>Snapshots v2.4</strong> — ${currentVideoId}</div>
-                <span style="color:#8f8;">Total: ${totalCount}</span>
-            </div>
+            ${renderPanelHeader(` — ${currentVideoId}`)}
+            ${storageFull ? `
+                <div style="
+                    margin-bottom:8px;
+                    padding:8px;
+                    background:#5c1a1a;
+                    border:1px solid #a33;
+                    border-radius:4px;
+                    color:#fcc;
+                ">
+                    Storage is full. Delete snapshots or use Clear Other Videos to free space.
+                </div>
+            ` : ""}
+            ${renderSettingsPanel(settings)}
 
             <div style="display:flex; gap:4px; flex-wrap:wrap; margin-bottom:8px;">
                 <button id="toggleTrackingBtn">
@@ -454,8 +689,8 @@
                     Clear This Video
                 </button>
 
-                <button id="clearAllBtn">
-                    Clear All Snapshots
+                <button id="clearOtherVideosBtn">
+                    Clear Other Videos
                 </button>
             </div>
 
@@ -526,7 +761,7 @@
         const toggleTrackingBtn = document.getElementById("toggleTrackingBtn");
         const manualSnapshotBtn = document.getElementById("manualSnapshotBtn");
         const clearBtn = document.getElementById("clearBtn");
-        const clearAllBtn = document.getElementById("clearAllBtn");
+        const clearOtherVideosBtn = document.getElementById("clearOtherVideosBtn");
 
         styleButton(
             toggleTrackingBtn,
@@ -535,7 +770,9 @@
 
         styleButton(manualSnapshotBtn, "#1d4ed8");
         styleButton(clearBtn, "#991b1b");
-        styleButton(clearAllBtn, "#7f1d1d");
+        styleButton(clearOtherVideosBtn, "#7f1d1d");
+
+        bindSettingsHandlers();
 
         const autoTabBtn = document.getElementById("autoTabBtn");
         const manualTabBtn = document.getElementById("manualTabBtn");
@@ -575,24 +812,38 @@
             }
 
             localStorage.removeItem(key);
+            storageFull = false;
             renderUI();
         };
 
-        clearAllBtn.onclick = () => {
-            if (!confirm("Delete all saved snapshot data for every video?")) {
+        clearOtherVideosBtn.onclick = () => {
+            if (!confirm(
+                "Delete all snapshots for other videos? "
+                + "This video's snapshots will be kept."
+            )) {
                 return;
             }
+
+            const currentKey = STORAGE_PREFIX + currentVideoId;
+            const keysToRemove = [];
 
             for (let i = 0; i < localStorage.length; i++) {
                 const storageKey = localStorage.key(i);
 
-                if (storageKey && storageKey.startsWith(STORAGE_PREFIX)) {
-                    localStorage.removeItem(storageKey);
+                if (
+                    storageKey
+                    && storageKey.startsWith(STORAGE_PREFIX)
+                    && storageKey !== currentKey
+                ) {
+                    keysToRemove.push(storageKey);
                 }
             }
 
-            // currentVideoId = null;
-            // lastHashes = { editor: "", rail: "" };
+            keysToRemove.forEach((storageKey) => {
+                localStorage.removeItem(storageKey);
+            });
+
+            storageFull = false;
             renderUI();
         };
 
@@ -616,10 +867,9 @@
                     data[idx].manual = true;
                 }
 
-                localStorage.setItem(
-                    key,
-                    JSON.stringify(trimSnapshots(data))
-                );
+                if (!persistSnapshotData(key, data)) {
+                    return;
+                }
 
                 renderUI();
             };
@@ -645,10 +895,9 @@
 
                 data.splice(idx, 1);
 
-                localStorage.setItem(
-                    key,
-                    JSON.stringify(data)
-                );
+                if (!persistSnapshotData(key, data)) {
+                    return;
+                }
 
                 renderUI();
             };
