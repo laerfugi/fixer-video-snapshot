@@ -140,7 +140,7 @@
 
                     storeSnapshot(snap, { manual: false });
                 }
-            }, 2000);
+            }, 1000);
         });
 
         observer.observe(document.body, {
@@ -188,7 +188,7 @@
             right: "10px",
             zIndex: 999999,
             padding: "6px 10px",
-            background: "#0f0",
+            background: "rgb(204, 216, 216)",
             border: "none",
             cursor: "pointer"
         });
@@ -203,11 +203,11 @@
             right: "10px",
             width: "380px",
             background: "#111",
-            color: "#0f0",
+            color: "rgb(204, 216, 216)",
             fontSize: "12px",
             zIndex: 999999,
             padding: "10px",
-            border: "1px solid #0f0",
+            border: "1px solid rgb(27, 31, 27)",
             borderRadius: "8px",
             overflow: "visible"
         });
@@ -335,7 +335,7 @@
             </div>
 
             <div style="color:#888; font-size:11px; text-align:right;">
-                ${tabCount} ${activeSnapshotTab} snapshot${tabCount === 1 ? "" : "s"}${tabCount > VISIBLE_LIST_ROWS ? " — scroll for more" : ""}
+                ${tabCount} ${activeSnapshotTab} snapshot${tabCount === 1 ? "" : "s"}${tabCount > VISIBLE_LIST_ROWS ? " - scroll for more" : ""}
             </div>
         `;
 
